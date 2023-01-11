@@ -50,59 +50,67 @@ const fetchMetadata = async (url) => {
 };
 
 const multicall = async ({ chain, rpc, list }) => {
-  if (!Object.keys(supportChain).includes(chain)) {
+  try {
+    if (!Object.keys(supportChain).includes(chain)) {
+      return [];
+    }
+
+    const rpcApi = rpc || chainConfig[chain].rpc;
+    const contractAddress = chainConfig[chain].multicall;
+    const provider = new ethers.providers.JsonRpcProvider(rpcApi);
+    const contract = new ethers.Contract(
+      contractAddress,
+      contractABI,
+      provider
+    );
+
+    const calls = [];
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      const { data: tokenURI } = await contract.populateTransaction.tokenURI(
+        item.tokenId
+      );
+      calls.push([item.contract, tokenURI]);
+    }
+
+    const { data: callData } = await contract.populateTransaction.tryAggregate(
+      false,
+      calls
+    );
+    const callResult = await mockCall({
+      rpc: rpcApi,
+      contract: contractAddress,
+      callData,
+    });
+
+    const [decodeResult] = ethers.utils.defaultAbiCoder.decode(
+      ["tuple(bool,bytes)[]"],
+      callResult
+    );
+    const filterResult = list
+      .map((item, index) => {
+        const urlStr = web3.utils.hexToUtf8(decodeResult[index][1]);
+        const metadata = ipfsUrl(urlStr).replace(/.*http/, "http");
+        return { ...item, metadata, success: decodeResult[index][0] };
+      })
+      .filter((i) => i.success)
+      .map((i) => ({
+        contract: i.contract,
+        tokenId: i.tokenId,
+        metadata: i.metadata,
+      }));
+
+    const result = [];
+    for (let i = 0; i < filterResult.length; i++) {
+      const item = filterResult[i];
+      const external = await fetchMetadata(item.metadata);
+      result.push({ ...item, external });
+    }
+
+    return result;
+  } catch (error) {
     return [];
   }
-
-  const rpcApi = rpc || chainConfig[chain].rpc;
-  const contractAddress = chainConfig[chain].multicall;
-  const provider = new ethers.providers.JsonRpcProvider(rpcApi);
-  const contract = new ethers.Contract(contractAddress, contractABI, provider);
-
-  const calls = [];
-  for (let i = 0; i < list.length; i++) {
-    const item = list[i];
-    const { data: tokenURI } = await contract.populateTransaction.tokenURI(
-      item.tokenId
-    );
-    calls.push([item.contract, tokenURI]);
-  }
-
-  const { data: callData } = await contract.populateTransaction.tryAggregate(
-    false,
-    calls
-  );
-  const callResult = await mockCall({
-    rpc: rpcApi,
-    contract: contractAddress,
-    callData,
-  });
-
-  const [decodeResult] = ethers.utils.defaultAbiCoder.decode(
-    ["tuple(bool,bytes)[]"],
-    callResult
-  );
-  const filterResult = list
-    .map((item, index) => {
-      const urlStr = web3.utils.hexToUtf8(decodeResult[index][1]);
-      const metadata = ipfsUrl(urlStr).replace(/.*http/, "http");
-      return { ...item, metadata, success: decodeResult[index][0] };
-    })
-    .filter((i) => i.success)
-    .map((i) => ({
-      contract: i.contract,
-      tokenId: i.tokenId,
-      metadata: i.metadata,
-    }));
-
-  const result = [];
-  for (let i = 0; i < filterResult.length; i++) {
-    const item = filterResult[i];
-    const external = await fetchMetadata(item.metadata);
-    result.push({ ...item, external });
-  }
-
-  return result;
 };
 
 module.exports = { multicall, supportChain };
